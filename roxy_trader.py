@@ -1,94 +1,88 @@
-# Roxy Trader™ – Versión Compacta para ejecución directa desde iPad o Google Colab
+# roxy_trader.py – Bot automático con Deriv y Alpaca
+import time
+import requests
+import json
+from alpaca_trade_api.rest import REST, TimeFrame
+from alerts import enviar_alerta  # Asegúrate de tener alerts.py
 
-import requests, time, hmac, hashlib, json, websocket, threading
-from datetime import datetime
-import alpaca_trade_api as alpaca
+# ================== CONFIGURACIÓN ==================
+# --- Deriv API ---
+DERIV_API_TOKEN = "tu_token_de_deriv"
+DERIV_APP_ID = "12345"
+DERIV_SYMBOL = "R_50"
 
-# === CONFIGURACIÓN ===
-DERIV_API_TOKEN = 'YOUR_DERIV_TOKEN_HERE'
-DERIV_APP_ID = '1089'  # Default app ID para cuentas normales
-ALPACA_KEY = 'YOUR_ALPACA_KEY_HERE'
-ALPACA_SECRET = 'YOUR_ALPACA_SECRET_HERE'
-ALPACA_PAPER = False  # False = Live trading
+# --- Alpaca API ---
+ALPACA_API_KEY = "TU_ALPACA_API_KEY"
+ALPACA_SECRET_KEY = "TU_ALPACA_SECRET_KEY"
+ALPACA_PAPER = True  # False si quieres usar real
 
-WHATSAPP_ALERTS = True
-EMAIL_ALERTS = True
+# --- Estrategia básica ---
+TAKE_PROFIT = 5.0
+STOP_LOSS = -3.0
 
-CAPITAL_TOTAL = 50
-REINVERSION_PORCENTAJE = 0.30
-RIESGO = 'medio'
-
-# === ALPACA SETUP ===
-alpaca_base_url = 'https://paper-api.alpaca.markets' if ALPACA_PAPER else 'https://api.alpaca.markets'
-alpaca_api = alpaca.REST(ALPACA_KEY, ALPACA_SECRET, alpaca_base_url, api_version='v2')
-
-# === FUNCIONES UTILITARIAS ===
-
-def alerta(msg):
-    print(f"[ALERTA] {msg}")
-    if WHATSAPP_ALERTS:
-        print(f"[WhatsApp] {msg}")
-    if EMAIL_ALERTS:
-        print(f"[Correo] {msg}")
-
-def operar_alpaca_simbolo(symbol='BTC/USD'):
+# ================== CONEXIONES ==================
+# Deriv Websocket (via REST para ejemplo básico)
+def abrir_trade_deriv():
+    headers = {
+        "Authorization": f"Bearer {DERIV_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "amount": 1,
+        "basis": "stake",
+        "contract_type": "CALL",
+        "currency": "USD",
+        "duration": 1,
+        "duration_unit": "m",
+        "symbol": DERIV_SYMBOL
+    }
     try:
-        print(f"⏳ Consultando {symbol} en Alpaca...")
-        barset = alpaca_api.get_barset(symbol.replace('/', ''), '5Min', limit=5)
-        bars = barset[symbol.replace('/', '')]
-        if len(bars) < 5: return
-
-        prices = [bar.c for bar in bars]
-        tendencia = "subiendo" if prices[-1] > prices[0] else "bajando"
-        qty = round((CAPITAL_TOTAL * 0.1) / prices[-1], 5)
-
-        if tendencia == "subiendo":
-            alpaca_api.submit_order(symbol=symbol.replace('/', ''), qty=qty, side='buy', type='market', time_in_force='gtc')
-            alerta(f"✅ Roxy compró {qty} de {symbol} (tendencia: {tendencia})")
+        r = requests.post("https://api.deriv.com/binary/v3/trade", headers=headers, data=json.dumps(payload))
+        if r.ok:
+            enviar_alerta("🚀 Trade ejecutado en Deriv.")
+            print("✅ Trade ejecutado en Deriv")
         else:
-            alerta(f"❌ Roxy no operó {symbol} por tendencia bajista.")
+            enviar_alerta("❌ Error al ejecutar trade en Deriv.")
+            print("❌ Error al ejecutar trade en Deriv")
     except Exception as e:
-        alerta(f"Error Alpaca: {e}")
+        print("🛑 Error:", e)
 
-# === DERIV – Conexión vía WebSocket ===
+# Alpaca client
+alpaca = REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url="https://paper-api.alpaca.markets" if ALPACA_PAPER else "https://api.alpaca.markets")
 
-def operar_deriv():
-    def on_message(ws, message):
-        msg = json.loads(message)
-        if 'msg_type' in msg and msg['msg_type'] == 'authorize':
-            contrato = {
-                "ticks": "1",
-                "amount": 1,
-                "basis": "stake",
-                "contract_type": "CALL",
-                "currency": "USD",
-                "duration": 5,
-                "duration_unit": "m",
-                "symbol": "R_50"
-            }
-            ws.send(json.dumps({"buy": 1, "price": 1, "parameters": contrato, "passthrough": {"action": "auto"}}))
-            alerta("🟢 Roxy ejecutó CALL en Deriv R_50 por 5 minutos.")
+def abrir_trade_alpaca():
+    try:
+        alpaca.submit_order(
+            symbol="AAPL",
+            qty=1,
+            side="buy",
+            type="market",
+            time_in_force="gtc"
+        )
+        enviar_alerta("📈 Trade ejecutado en Alpaca.")
+        print("✅ Trade ejecutado en Alpaca")
+    except Exception as e:
+        enviar_alerta("⚠️ Error al ejecutar trade en Alpaca.")
+        print("❌ Error:", e)
 
-    def on_open(ws):
-        ws.send(json.dumps({"authorize": DERIV_API_TOKEN}))
-
-    def on_error(ws, error): alerta(f"⚠️ Error Deriv: {error}")
-    def on_close(ws): print("🔌 Conexión Deriv cerrada.")
-
-    ws = websocket.WebSocketApp("wss://ws.derivws.com/websockets/v3?app_id=" + DERIV_APP_ID,
-                                on_message=on_message, on_open=on_open,
-                                on_error=on_error, on_close=on_close)
-    threading.Thread(target=ws.run_forever).start()
-
-# === CICLO PRINCIPAL DE ROXY TRADER ===
-
-def roxy_main_loop():
-    alerta("🚀 Roxy Trader™ iniciando operaciones automáticas...")
+# ================== LÓGICA AUTOMÁTICA ==================
+def estrategia_roxy():
     while True:
-        operar_deriv()
-        operar_alpaca_simbolo('BTC/USD')
-        time.sleep(300)  # espera 5 minutos
+        print("⏳ Evaluando oportunidad...")
+        # Aquí podrías leer indicadores, condiciones o señales externas
 
-# === EJECUCIÓN ===
+        # Simulación de decisión
+        decision = "comprar"
+
+        if decision == "comprar":
+            abrir_trade_deriv()
+            abrir_trade_alpaca()
+        else:
+            print("🚫 No hay señal de entrada")
+
+        time.sleep(300)  # Esperar 5 minutos
+
+# ================== EJECUCIÓN ==================
 if __name__ == "__main__":
-    roxy_main_loop()
+    enviar_alerta("🤖 Roxy Trader iniciado.")
+    estrategia_roxy()
