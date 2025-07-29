@@ -1,64 +1,66 @@
 import alpaca_trade_api as tradeapi
-import datetime
 import pandas as pd
-import numpy as np
+import time
 
-# ✅ Credenciales Paper Trading
+# 📌 CONFIGURACIÓN: Reemplaza aquí tu clave secreta si falta
 API_KEY = 'PKEEDWE1AK50T5TR3JNM'
-API_SECRET = 'o6dUILZjbUUEHu2vUQHekGjy0K0xxxxxxxxxxxx'  # <- pon tu secret completo
-BASE_URL = 'https://paper-api.alpaca.markets'  # 🟢 CORRECTO
+API_SECRET = 'o6dUILZjbUUEHu2vUQHekGjy0K0xxxxxxxxxx'  # ← asegúrate de poner tu secreto aquí
+BASE_URL = 'https://paper-api.alpaca.markets'
 
-# Inicializa conexión
-api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
+# 🔑 Inicializar conexión con la API de Alpaca (modo paper)
+api = tradeapi.REST(API_KEY, API_SECRET, base_url=BASE_URL, api_version='v2')
 
-# Configuración de símbolo y fechas
-SYMBOL = "AAPL"
-TIMEFRAME = tradeapi.TimeFrame.Minute
-LIMIT = 100
-END_DATE = datetime.datetime.now()
-START_DATE = END_DATE - datetime.timedelta(minutes=LIMIT)
+# ✅ Verificación de cuenta
+try:
+    account = api.get_account()
+    print(f"💼 Cuenta conectada: {account.id}")
+    print(f"💵 Saldo disponible: {account.cash}")
+except Exception as e:
+    print("🚫 Error conectando a la cuenta Alpaca:", e)
+    exit()
 
-# ✅ Obtener datos del activo
-print(f"⏳ Obteniendo datos de {SYMBOL}...")
-bars = api.get_bars(
-    SYMBOL,
-    TIMEFRAME,
-    start=START_DATE.isoformat(),
-    end=END_DATE.isoformat(),
-    adjustment='raw',
-    limit=LIMIT
-)
-df = bars.df[SYMBOL]
+# ⚙️ CONFIGURACIÓN DE LA ESTRATEGIA
+symbol = 'AAPL'
+timeframe = '1Min'
+limit = 100
 
-# Calcular indicadores técnicos
-def calcular_rsi(series, period=14):
-    delta = series.diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
+# 📊 OBTENER DATOS HISTÓRICOS
+try:
+    print("📈 Descargando datos históricos...")
+    bars = api.get_bars(symbol, timeframe, limit=limit).df
+    bars = bars[bars['symbol'] == symbol]
+except Exception as e:
+    print("🚫 Error obteniendo datos:", e)
+    exit()
 
-    avg_gain = pd.Series(gain).rolling(window=period).mean()
-    avg_loss = pd.Series(loss).rolling(window=period).mean()
+# 🧠 CÁLCULO DE INDICADORES TÉCNICOS (RSI + EMA)
+def calculate_indicators(df):
+    df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
 
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    return df
 
-df["RSI"] = calcular_rsi(df["close"])
-df["EMA"] = df["close"].ewm(span=14, adjust=False).mean()
+bars = calculate_indicators(bars)
 
-# Evaluar estrategia
-ultimo_rsi = df["RSI"].iloc[-1]
-ultimo_precio = df["close"].iloc[-1]
-ultima_ema = df["EMA"].iloc[-1]
+# 🧪 IMPRIMIR ÚLTIMAS SEÑALES
+latest = bars.iloc[-1]
+print(f"\n📊 Último cierre: {latest['close']:.2f}")
+print(f"📉 RSI: {latest['RSI']:.2f}")
+print(f"📈 EMA20: {latest['EMA20']:.2f}")
 
-print("\n📊 Últimos datos:")
-print(f"🟢 Precio: {ultimo_precio}")
-print(f"🔵 EMA: {ultima_ema}")
-print(f"🟠 RSI: {ultimo_rsi}")
-
-if ultimo_rsi < 30 and ultimo_precio > ultima_ema:
-    print("✅ Señal: COMPRA 📈")
-elif ultimo_rsi > 70 and ultimo_precio < ultima_ema:
-    print("❌ Señal: VENTA 📉")
-else:
-    print("⏸️ Señal: ESPERAR...")
+# 📍 LÓGICA DE COMPRA/VENTA SIMPLIFICADA
+try:
+    if latest['RSI'] < 30 and latest['close'] > latest['EMA20']:
+        print("🟢 Señal de COMPRA detectada. Ejecutando orden...")
+        api.submit_order(symbol=symbol, qty=1, side='buy', type='market', time_in_force='gtc')
+    elif latest['RSI'] > 70 and latest['close'] < latest['EMA20']:
+        print("🔴 Señal de VENTA detectada. Ejecutando orden...")
+        api.submit_order(symbol=symbol, qty=1, side='sell', type='market', time_in_force='gtc')
+    else:
+        print("⏸ No se detectó ninguna señal clara. Esperando próxima vela.")
+except Exception as e:
+    print("🚫 Error ejecutando la orden:", e)
