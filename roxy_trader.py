@@ -1,104 +1,72 @@
-# roxy_trader.py
-
 import alpaca_trade_api as tradeapi
+import datetime
 import pandas as pd
-import time
-from datetime import datetime, timedelta
+import numpy as np
 
-# 📌 CONFIGURACIÓN
-API_KEY = 'PKEEDWE1AK50T5TR3JNM'
-API_SECRET = 'o6dUILZjbUUEHu2vUQHeKGjy0K0zhSvhZbLqZtCm'
-BASE_URL = 'https://paper-api.alpaca.markets'  # Paper trading URL
+# ✅ Configura tus credenciales (PAPER TRADING)
+API_KEY = 'PKEEDWE1AK50T5TR3JNM'  # <- Puedes poner la tuya
+API_SECRET = 'o6dUILZjbUUEHu2vUQHekGjy0K0xxxxxxxxxxxx'  # <- Completa con tu secret
+BASE_URL = 'https://paper-api.alpaca.markets'  # ✅ PAPER endpoint
 
-SYMBOL = 'AAPL'
-RSI_PERIOD = 14
-EMA_PERIOD = 9
-RSI_OVERBOUGHT = 70
-RSI_OVERSOLD = 30
-TRADE_QTY = 1
-
-# 📡 Conectar con la API de Alpaca
+# ✅ Inicializa la API
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
-def fetch_data(symbol):
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=2)
+# ✅ Parámetros
+SYMBOL = "AAPL"
+TIMEFRAME = tradeapi.TimeFrame.Minute
+LIMIT = 100  # Últimos 100 minutos
+END_DATE = datetime.datetime.now()
+START_DATE = END_DATE - datetime.timedelta(minutes=LIMIT)
 
-    print(f"Obteniendo datos de {symbol}...")
-    try:
-        bars = api.get_bars(
-            symbol,
-            tradeapi.TimeFrame.Minute,
-            start=start_date.isoformat(),
-            end=end_date.isoformat(),
-            limit=100
-        )
-        df = pd.DataFrame([bar.__dict__ for bar in bars])
-        df['timestamp'] = pd.to_datetime(df['t'])
-        df.set_index('timestamp', inplace=True)
-        df.sort_index(inplace=True)
-        df['close'] = pd.to_numeric(df['c'])
-        return df
-    except Exception as e:
-        print(f"❌ Error al obtener datos: {e}")
-        return None
+# ✅ Obtener datos de velas con get_bars (la forma correcta)
+print(f"⏳ Obteniendo datos de {SYMBOL}...")
+bars = api.get_bars(
+    SYMBOL,
+    TIMEFRAME,
+    start=START_DATE.isoformat(),
+    end=END_DATE.isoformat(),
+    adjustment='raw',
+    limit=LIMIT
+)
 
-def calculate_indicators(df):
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=RSI_PERIOD).mean()
-    avg_loss = loss.rolling(window=RSI_PERIOD).mean()
+# ✅ Convertir a DataFrame
+df = bars.df[SYMBOL]
+
+# ✅ Calcular RSI
+def calcular_rsi(series, period=14):
+    delta = series.diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+
+    avg_gain = pd.Series(gain).rolling(window=period).mean()
+    avg_loss = pd.Series(loss).rolling(window=period).mean()
+
     rs = avg_gain / avg_loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    df['EMA'] = df['close'].ewm(span=EMA_PERIOD, adjust=False).mean()
-    return df
+    rsi = 100 - (100 / (1 + rs))
 
-def check_signals(df):
-    if df is None or df.empty:
-        return None
+    return rsi
 
-    rsi = df['RSI'].iloc[-1]
-    price = df['close'].iloc[-1]
-    ema = df['EMA'].iloc[-1]
+df["RSI"] = calcular_rsi(df["close"])
 
-    if rsi < RSI_OVERSOLD and price > ema:
-        return 'buy'
-    elif rsi > RSI_OVERBOUGHT and price < ema:
-        return 'sell'
-    else:
-        return 'hold'
+# ✅ Calcular EMA (Exponential Moving Average)
+df["EMA"] = df["close"].ewm(span=14, adjust=False).mean()
 
-def place_order(side, qty, symbol):
-    try:
-        order = api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side=side,
-            type='market',
-            time_in_force='gtc'
-        )
-        print(f"✅ Orden enviada: {side.upper()} {qty} {symbol}")
-    except Exception as e:
-        print(f"❌ Error al enviar orden: {e}")
+# ✅ Lógica de trading
+ultimo_rsi = df["RSI"].iloc[-1]
+ultimo_precio = df["close"].iloc[-1]
+ultima_ema = df["EMA"].iloc[-1]
 
-def roxy_trader():
-    print(f"📈 Ejecutando estrategia Roxy Trader con RSI + EMA para {SYMBOL}...")
+print("\n📊 Últimos datos:")
+print(f"🟢 Precio: {ultimo_precio}")
+print(f"🔵 EMA: {ultima_ema}")
+print(f"🟠 RSI: {ultimo_rsi}")
 
-    df = fetch_data(SYMBOL)
-    if df is None:
-        print("⚠️ No se pudieron obtener datos.")
-        return
+# ✅ Ejemplo de señal
+if ultimo_rsi < 30 and ultimo_precio > ultima_ema:
+    print("✅ Señal: COMPRA 📈")
+elif ultimo_rsi > 70 and ultimo_precio < ultima_ema:
+    print("❌ Señal: VENTA 📉")
+else:
+    print("⏸️ Señal: ESPERAR...")
 
-    df = calculate_indicators(df)
-    signal = check_signals(df)
-
-    print(f"📊 Señal detectada: {signal.upper()}")
-    if signal in ['buy', 'sell']:
-        place_order(signal, TRADE_QTY, SYMBOL)
-    else:
-        print("⏸️ No se envió ninguna orden.")
-
-# 🔁 Ejecutar una vez
-if __name__ == "__main__":
-    roxy_trader()
+# (Opcional) Aquí podrías ejecutar una orden real de compra/venta si lo deseas
