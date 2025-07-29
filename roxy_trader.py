@@ -1,73 +1,80 @@
-import requests
+import alpaca_trade_api as tradeapi
+import time
 import pandas as pd
 
-# === Configuración de claves Alpaca (Paper) ===
-API_KEY = "PKGGAJO1SKOQX5XMD8J4"
-API_SECRET = "jrmAlbLfzhbq07pXJeRukC73RUG67P7"
-BASE_URL = "https://paper-api.alpaca.markets"  # <- Esta línea es clave
+# 🔐 CONFIGURACIÓN DE CREDENCIALES Y API (PAPER TRADING)
+API_KEY = "PKEEDWE1AK50T5TR3JNM"
+API_SECRET = "o6dUILZjbUUUHu2vUQHekGjy0K0tVqmbdkJLOzqv"
+BASE_URL = "https://paper-api.alpaca.markets"
 
-HEADERS = {
-    "APCA-API-KEY-ID": API_KEY,
-    "APCA-API-SECRET-KEY": API_SECRET
-}
+# 🔄 Conexión con Alpaca
+api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
-# === Parámetros de estrategia ===
-SYMBOL = "AAPL"
-TIMEFRAME = "1Day"
-LIMIT = 100
+# 📈 PARÁMETROS DE TRADING
+symbol = "AAPL"         # Puedes cambiarlo por otro como "TSLA" o "MSFT"
+qty = 1                 # Número de acciones a comprar/vender
+rsi_period = 14
+rsi_overbought = 70
+rsi_oversold = 30
+ema_period = 20
 
-# === Obtener datos históricos ===
-def obtener_datos():
-    url = f"{BASE_URL}/v2/stocks/{SYMBOL}/bars?timeframe={TIMEFRAME}&limit={LIMIT}"
-    response = requests.get(url, headers=HEADERS)
-    
-    if response.status_code != 200:
-        raise Exception(f"Error al obtener datos: {response.status_code} – {response.text}")
-    
-    datos = response.json()["bars"]
-    df = pd.DataFrame(datos)
-    df["t"] = pd.to_datetime(df["t"])
-    df.set_index("t", inplace=True)
+def get_data():
+    barset = api.get_bars(symbol, tradeapi.TimeFrame.Minute, limit=100)
+    df = pd.DataFrame([{
+        'time': bar.t,
+        'open': bar.o,
+        'high': bar.h,
+        'low': bar.l,
+        'close': bar.c,
+        'volume': bar.v
+    } for bar in barset])
+    df.set_index('time', inplace=True)
     return df
 
-# === Cálculos de indicadores técnicos (RSI y EMA) ===
-def calcular_indicadores(df):
-    df["EMA_10"] = df["c"].ewm(span=10).mean()
-
-    delta = df["c"].diff()
-    ganancia = delta.clip(lower=0)
-    perdida = -delta.clip(upper=0)
-    media_ganancia = ganancia.rolling(window=14).mean()
-    media_perdida = perdida.rolling(window=14).mean()
-    rs = media_ganancia / media_perdida
-    df["RSI_14"] = 100 - (100 / (1 + rs))
-
+def calculate_indicators(df):
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(rsi_period).mean()
+    avg_loss = loss.rolling(rsi_period).mean()
+    rs = avg_gain / avg_loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    df['EMA'] = df['close'].ewm(span=ema_period, adjust=False).mean()
     return df
 
-# === Ejecutar estrategia simple (solo imprime señal) ===
-def ejecutar_estrategia(df):
-    ultima_fila = df.iloc[-1]
-    rsi = ultima_fila["RSI_14"]
-    ema = ultima_fila["EMA_10"]
-    precio = ultima_fila["c"]
+def check_signals(df):
+    rsi = df['RSI'].iloc[-1]
+    price = df['close'].iloc[-1]
+    ema = df['EMA'].iloc[-1]
 
-    print(f"\n📈 Último precio: {precio:.2f}")
-    print(f"📊 RSI 14: {rsi:.2f}")
-    print(f"📊 EMA 10: {ema:.2f}")
-
-    if rsi < 30 and precio > ema:
-        print("✅ Señal: COMPRAR (RSI sobrevendido y precio sobre EMA)")
-    elif rsi > 70 and precio < ema:
-        print("❌ Señal: VENDER (RSI sobrecomprado y precio bajo EMA)")
+    if rsi < rsi_oversold and price > ema:
+        return "buy"
+    elif rsi > rsi_overbought and price < ema:
+        return "sell"
     else:
-        print("⚠️ Señal: MANTENER (No hay condición clara)")
+        return "hold"
 
-# === Script principal ===
-if __name__ == "__main__":
-    print("🚀 Ejecutando estrategia Roxy Trader con RSI + EMA...")
+def place_order(signal):
+    if signal == "buy":
+        print(f"🟢 Enviando orden de COMPRA de {qty} acciones de {symbol}...")
+        api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='gtc')
+    elif signal == "sell":
+        print(f"🔴 Enviando orden de VENTA de {qty} acciones de {symbol}...")
+        api.submit_order(symbol=symbol, qty=qty, side='sell', type='market', time_in_force='gtc')
+    else:
+        print("🟡 No se ejecuta orden. Señal = HOLD.")
+
+def run_strategy():
+    print("▶️ Ejecutando estrategia Roxy Trader con RSI + EMA...")
+
     try:
-        df = obtener_datos()
-        df = calcular_indicadores(df)
-        ejecutar_estrategia(df)
+        df = get_data()
+        df = calculate_indicators(df)
+        signal = check_signals(df)
+        place_order(signal)
     except Exception as e:
-        print(f"❌ Error al ejecutar Roxy Trader:\n{e}")
+        print("❌ Error al ejecutar Roxy Trader:")
+        print(e)
+
+if __name__ == "__main__":
+    run_strategy()
